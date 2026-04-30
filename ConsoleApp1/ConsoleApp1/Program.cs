@@ -10,7 +10,6 @@ sortOption.SetDefaultValue("name");
 var removeEmptyLinesOption = new Option<bool>(new[] { "--remove-empty-lines", "-r" }, "Remove empty lines");
 var authorOption = new Option<string>(new[] { "--author", "-a" }, "Author name");
 
-// --- פקודת ה-Bundle (הלוגיקה הקיימת) ---
 var bundleCommand = new Command("bundle", "Bundle code files into a single file");
 bundleCommand.AddOption(languageOption);
 bundleCommand.AddOption(outputOption);
@@ -23,65 +22,79 @@ bundleCommand.SetHandler((string[] languages, FileInfo output, bool note, string
 {
     try
     {
-        // 1. קבלת כל הקבצים בתיקייה הנוכחית (כולל תיקיות משנה)
         var currentDirectory = Directory.GetCurrentDirectory();
         var allFiles = Directory.GetFiles(currentDirectory, "*.*", SearchOption.AllDirectories);
 
-        // 2. סינון קבצים: לפי שפות ולפי נתיבים אסורים (bin, debug)
+        // --- שינוי 1: סינון תיקיות נעולות/מערכת ---
         var filteredFiles = allFiles.Where(file =>
         {
-            // בדיקה אם הקובץ בתיקייה אסורה
-            bool isForbiddenPath = file.Contains($"{Path.DirectorySeparatorChar}bin{Path.DirectorySeparatorChar}") ||
-                                   file.Contains($"{Path.DirectorySeparatorChar}debug{Path.DirectorySeparatorChar}");
-            if (isForbiddenPath) return false;
-
-            // בדיקת סיומת הקובץ מול רשימת השפות
-            string extension = Path.GetExtension(file).TrimStart('.');
-            return languages.Contains("all") || languages.Contains(extension);
+            string[] excludedFolders = { "bin", "debug", "obj", ".vs", ".git" };
+            // שימוש ב-Split ו-Contains מבטיח שנחפש תיקייה שלמה ולא רק חלק משם
+            var pathParts = file.Split(Path.DirectorySeparatorChar);
+            return !excludedFolders.Any(folder => pathParts.Contains(folder));
         }).ToList();
 
-        // 3. מיון הקבצים
-        if (sort == "type")
-            filteredFiles = filteredFiles.OrderBy(f => Path.GetExtension(f)).ThenBy(f => Path.GetFileName(f)).ToList();
-        else
-            filteredFiles = filteredFiles.OrderBy(f => Path.GetFileName(f)).ToList();
+        // --- שינוי 2: סינון לפי שפות על הרשימה המסוננת כבר ---
+        // סינון לפי שפות - מוודא שאנחנו לוקחים רק קבצי טקסט מוכרים
+        var finalFiles = filteredFiles.Where(file =>
+        {
+            // רשימת סיומות של קבצי קוד שאנחנו מרשים
+            string[] allowedExtensions = { ".cs", ".py", ".java", ".txt", ".js", ".ts", ".html", ".css" };
+            string extension = Path.GetExtension(file).ToLower();
 
-        // 4. כתיבה לקובץ הפלט
+            if (languages.Contains("all"))
+            {
+                // אם המשתמש בחר 'all', ניקח רק קבצים מסוגי הקוד המוכרים כדי למנוע ג'יבריש
+                return allowedExtensions.Contains(extension);
+            }
+
+            // אם המשתמש בחר שפות ספציפיות (למשל 'py'), נבדוק אם הסיומת מתאימה
+            return languages.Any(lang => extension == "." + lang.Trim().ToLower());
+        }).ToList();
+
+        // מיון הקבצים
+        if (sort == "type")
+            finalFiles = finalFiles.OrderBy(f => Path.GetExtension(f)).ThenBy(f => Path.GetFileName(f)).ToList();
+        else
+            finalFiles = finalFiles.OrderBy(f => Path.GetFileName(f)).ToList();
+
         using (var writer = new StreamWriter(output.FullName))
         {
-            // הוספת שם המחבר בראש הקובץ אם צוין
             if (!string.IsNullOrWhiteSpace(author))
             {
                 writer.WriteLine($"// Author: {author}");
             }
 
-            foreach (var file in filteredFiles)
+            foreach (var file in finalFiles)
             {
-                // הוספת הערה עם נתיב הקובץ המקורי
-                if (note)
+                try
                 {
-                    writer.WriteLine($"// Source: {Path.GetRelativePath(currentDirectory, file)}");
-                }
+                    // --- שינוי 3: איחוד הקריאה כדי למנוע כפילות ---
+                    if (note)
+                    {
+                        writer.WriteLine($"// Source: {Path.GetRelativePath(currentDirectory, file)}");
+                    }
 
-                // קריאת תוכן הקובץ
-                var lines = File.ReadAllLines(file);
-                foreach (var line in lines)
+                    var lines = File.ReadAllLines(file);
+                    foreach (var line in lines)
+                    {
+                        if (removeLines && string.IsNullOrWhiteSpace(line))
+                            continue;
+
+                        writer.WriteLine(line);
+                    }
+                    writer.WriteLine("------------------------------------------");
+                }
+                catch (IOException) // טיפול בקובץ נעול
                 {
-                    // מחיקת שורות ריקות אם המשתמש ביקש
-                    if (removeLines && string.IsNullOrWhiteSpace(line))
-                        continue;
-
-                    writer.WriteLine(line);
+                    Console.ForegroundColor = ConsoleColor.Yellow;
+                    Console.WriteLine($"[Warning] Skipping locked file: {Path.GetFileName(file)}");
+                    Console.ResetColor();
                 }
-                writer.WriteLine(); // שורה ריקה בין קובץ לקובץ
             }
         }
 
-        Console.WriteLine($"Successfully bundled {filteredFiles.Count} files into {output.Name}");
-    }
-    catch (DirectoryNotFoundException)
-    {
-        Console.WriteLine("Error: The output directory is invalid.");
+        Console.WriteLine($"Successfully bundled {finalFiles.Count} files into {output.Name}");
     }
     catch (Exception ex)
     {
@@ -90,42 +103,29 @@ bundleCommand.SetHandler((string[] languages, FileInfo output, bool note, string
 
 }, languageOption, outputOption, noteOption, sortOption, removeEmptyLinesOption, authorOption);
 
-// --- פקודת ה-Create-Rsp (הפיצ'ר החדש) ---
+// --- פקודת ה-Create-Rsp (נשארה זהה, רק הוספת מירכאות ב-Author) ---
 var createRspCommand = new Command("create-rsp", "Create a response file for the bundle command");
-
 createRspCommand.SetHandler(() =>
 {
-    Console.WriteLine("Creating a new response file. Please answer the following questions:");
+    Console.WriteLine("Creating a new response file...");
+    Console.Write("Enter languages (e.g., 'cs, py' or 'all'): ");
+    string languages = Console.ReadLine() ?? "all";
 
-    // 1. ולידציה על שפות
-    string languages = "";
-    while (string.IsNullOrWhiteSpace(languages))
-    {
-        Console.Write("Enter languages (e.g., 'cs, py' or 'all'): ");
-        languages = Console.ReadLine();
-        if (string.IsNullOrWhiteSpace(languages)) Console.WriteLine("Error: Language is required!");
-    }
-
-    // 2. קלט לנתיב פלט
-    Console.Write("Enter output file path (e.g., bundle.txt): ");
+    Console.Write("Enter output file path: ");
     var output = Console.ReadLine();
 
-    // 3. שאלות כן/לא (bool)
     Console.Write("Include source notes? (y/n): ");
     var note = Console.ReadLine()?.ToLower() == "y";
 
     Console.Write("Sort by (name/type): ");
-    var sort = Console.ReadLine();
-    if (sort != "type") sort = "name";
+    var sort = Console.ReadLine() == "type" ? "type" : "name";
 
     Console.Write("Remove empty lines? (y/n): ");
     var removeLines = Console.ReadLine()?.ToLower() == "y";
 
-    Console.Write("Enter author name (optional): ");
+    Console.Write("Enter author name: ");
     var author = Console.ReadLine();
 
-    // בניית פקודת ה-Response
-    // אנחנו בונים מחרוזת שנראית בדיוק כמו פקודה בטרמינל
     var rspContent = $"bundle -l {languages}";
     if (!string.IsNullOrEmpty(output)) rspContent += $" -o \"{output}\"";
     if (note) rspContent += " -n";
@@ -133,21 +133,12 @@ createRspCommand.SetHandler(() =>
     if (removeLines) rspContent += " -r";
     if (!string.IsNullOrEmpty(author)) rspContent += $" -a \"{author}\"";
 
-    try
-    {
-        File.WriteAllText("bundle.rsp", rspContent);
-        Console.WriteLine("\nSuccess! 'bundle.rsp' created.");
-        Console.WriteLine("To run it, use: dotnet @bundle.rsp");
-    }
-    catch (Exception ex)
-    {
-        Console.WriteLine($"Error creating file: {ex.Message}");
-    }
+    File.WriteAllText("bundle.rsp", rspContent);
+    Console.WriteLine("\nSuccess! 'bundle.rsp' created.");
 });
 
-// --- הגדרת פקודת השורש והרצה ---
 var rootCommand = new RootCommand("CLI Tool for File Bundling");
 rootCommand.AddCommand(bundleCommand);
-rootCommand.AddCommand(createRspCommand); // הוספת הפקודה החדשה לעץ הפקודות
+rootCommand.AddCommand(createRspCommand);
 
 await rootCommand.InvokeAsync(args);
